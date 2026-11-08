@@ -1,0 +1,183 @@
+# Gecko spa bridge on a Waveshare ESP32-S3-Zero with an Arduino Nano I2C proxy.
+# Wiring, voltage divider and safety notes: docs/fork/HARDWARE-S3-ZERO.md
+#
+# Uses the fork's features: read-only heater, circulation and pump sensors,
+# the set point sensor, program saving, and change-only status logging.
+# Copy secrets.yaml.template to secrets.yaml and fill it in before building.
+
+substitutions:
+  device_name: spa-controller
+  friendly_name: Spa Controller
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 4MB
+  framework:
+    type: arduino
+
+# For a build from GitHub instead of this checkout, use for example:
+#   - source: github://glamic26/esphome-gecko@fork-v1.0.0
+#     components: [gecko_spa]
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+logger:
+  level: DEBUG
+  # The S3-Zero has no USB-serial chip; logs go over its native USB port.
+  hardware_uart: USB_SERIAL_JTAG
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# Serial link to the Arduino proxy (GPIO6 through the 2.2k/4.7k divider)
+uart:
+  id: arduino_uart
+  tx_pin: GPIO5
+  rx_pin: GPIO6
+  baud_rate: 115200
+  rx_buffer_size: 512
+
+gecko_spa:
+  id: spa
+  uart_id: arduino_uart
+  reset_pin: GPIO7
+  log_status_changes: true
+
+climate:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    name: "Spa"
+    report_cool_mode: false
+
+select:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    name: "Spa Program"
+    icon: "mdi:format-list-bulleted"
+
+switch:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: light
+    name: "Spa Light"
+    icon: "mdi:lightbulb"
+
+binary_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: connected
+    name: "Spa Connected"
+    device_class: connectivity
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: standby
+    name: "Spa Standby"
+    icon: "mdi:power-standby"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: heater
+    name: "Spa Heater"
+    device_class: heat
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: circulation
+    name: "Spa Circulation Pump"
+    device_class: running
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump1
+    name: "Spa Pump 1"
+    device_class: running
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump2
+    name: "Spa Pump 2"
+    device_class: running
+
+sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: set_point
+    name: "Spa Set Point"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump_timer
+    name: "Spa Pump Timer"
+  - platform: wifi_signal
+    name: "Spa Controller WiFi Signal"
+    update_interval: 60s
+
+text_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: spa_time
+    name: "Spa Time"
+    icon: "mdi:clock-outline"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: rinse_filter
+    name: "Spa Rinse Filter Due"
+    icon: "mdi:air-filter"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: clean_filter
+    name: "Spa Clean Filter Due"
+    icon: "mdi:vacuum"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: change_water
+    name: "Spa Change Water Due"
+    icon: "mdi:water-sync"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: spa_checkup
+    name: "Spa Checkup Due"
+    icon: "mdi:wrench-clock"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pack_type
+    name: "Spa Pack Type"
+    entity_category: diagnostic
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: config_version
+    name: "Spa Config Version"
+    entity_category: diagnostic
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: status_version
+    name: "Spa Status Version"
+    entity_category: diagnostic
+
+button:
+  - platform: template
+    name: "Spa Refresh Status"
+    icon: "mdi:refresh"
+    on_press:
+      - lambda: id(spa).request_status();
+  - platform: template
+    name: "Spa Restart Arduino"
+    icon: "mdi:restart"
+    entity_category: config
+    on_press:
+      - lambda: id(spa).reset_arduino();

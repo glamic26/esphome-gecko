@@ -1,3 +1,16 @@
+> **About this fork.** Fixes and read-only sensors for the inYT pack
+> (config/status version 65): status after a restart, program saving,
+> heater/circulation/pump sensors, a set point sensor, optional quieter logs
+> and cool-mode reporting, an ESP32-S3-Zero example, and tests built from
+> recorded bus traffic. Existing configurations work unchanged.
+> Details: [docs/fork/README.md](docs/fork/README.md).
+>
+> Changes in this fork were developed with AI assistance (Claude Code) and
+> tested on real hardware. Review accordingly.
+>
+> Status: pre-release. Tested by replaying traffic recorded on real hardware;
+> on-spa acceptance of this build is pending.
+
 <p align="center"><img src="https://github.com/zteifel/esphome-gecko/blob/master/logo_small.png" alt="Smart Spa Heating" width="400"><img src="https://github.com/zteifel/smart-spa-heating/blob/main/logo_small.png" alt="Smart Spa Heating" width="400"></p>
 
 
