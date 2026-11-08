@@ -1,0 +1,91 @@
+# End-to-end test build: the real firmware on ESPHome's host platform, with a
+# pseudo-terminal standing in for the Arduino proxy. Driven by run_host_e2e.py.
+
+substitutions:
+  uart_port: /tmp/gecko-e2e-tty
+  api_port: "16053"
+
+esphome:
+  name: gecko-e2e
+
+host:
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+
+logger:
+  level: DEBUG
+
+api:
+  port: ${api_port}
+
+preferences:
+  flash_write_interval: 1s
+
+uart:
+  id: arduino_uart
+  port: ${uart_port}
+  baud_rate: 115200
+  rx_buffer_size: 512
+
+gecko_spa:
+  id: spa
+  uart_id: arduino_uart
+  log_status_changes: true
+
+climate:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    name: "Spa"
+    report_cool_mode: false
+
+select:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    name: "Spa Program"
+
+switch:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: light
+    name: "Spa Light"
+
+binary_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: connected
+    name: "Spa Connected"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: heater
+    name: "Spa Heater"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: circulation
+    name: "Spa Circulation Pump"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump1
+    name: "Spa Pump 1"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump2
+    name: "Spa Pump 2"
+
+sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: set_point
+    name: "Spa Set Point"
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump_timer
+    name: "Spa Pump Timer"
+
+text_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: status_version
+    name: "Spa Status Version"
