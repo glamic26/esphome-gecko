@@ -88,5 +88,4 @@ as upstream and are kept either way.
 
 ## Licence
 
-Upstream's README states the MIT licence; upstream has no LICENSE file.
-The changes in this fork are offered under the same MIT terms.
+Same licence as upstream (MIT, as stated in the upstream README).
