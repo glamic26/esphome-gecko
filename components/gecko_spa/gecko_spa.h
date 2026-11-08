@@ -13,6 +13,7 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/sensor/sensor.h"
+#include "gecko_protocol.h"
 
 namespace esphome {
 namespace gecko_spa {
@@ -64,6 +65,7 @@ static const GeckoLogOffsets GECKO_LOG_OFFSETS_V50 = {
 };
 
 class GeckoSpaClimate;
+class GeckoSpaSelect;
 
 enum class NotifDateFormat : uint8_t {
   Y_M_D = 0,
@@ -86,7 +88,13 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   // Entity setters - binary sensors (read-only status)
   void set_waterfall_sensor(binary_sensor::BinarySensor *bs) { waterfall_sensor_ = bs; }
   void set_blower_sensor(binary_sensor::BinarySensor *bs) { blower_sensor_ = bs; }
-  void set_program_select(select::Select *sel) { program_select_ = sel; }
+  // FORK: read-only output sensors (see DECISIONS.md #3)
+  void set_heater_sensor(binary_sensor::BinarySensor *bs) { heater_sensor_ = bs; }
+  void set_circulation_sensor(binary_sensor::BinarySensor *bs) { circulation_sensor_ = bs; }
+  void set_pump1_sensor(binary_sensor::BinarySensor *bs) { pump1_sensor_ = bs; }
+  void set_pump2_sensor(binary_sensor::BinarySensor *bs) { pump2_sensor_ = bs; }
+  // FORK: typed so the reported program can be saved (see DECISIONS.md #2)
+  void set_program_select(GeckoSpaSelect *sel) { program_select_ = sel; }
   void set_standby_sensor(binary_sensor::BinarySensor *bs) {
     standby_sensor_ = bs;
     bs->publish_state(standby_state_);
@@ -95,7 +103,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
     connected_sensor_ = bs;
     bs->publish_state(connected_);
   }
-  void set_climate(climate::Climate *cl) { climate_ = cl; }
+  void set_climate(GeckoSpaClimate *cl) { climate_ = cl; }  // FORK: typed for report_cool_mode
   void set_rinse_filter_sensor(text_sensor::TextSensor *s) { rinse_filter_sensor_ = s; }
   void set_clean_filter_sensor(text_sensor::TextSensor *s) { clean_filter_sensor_ = s; }
   void set_change_water_sensor(text_sensor::TextSensor *s) { change_water_sensor_ = s; }
@@ -106,6 +114,10 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   void set_lock_mode_sensor(text_sensor::TextSensor *s) { lock_mode_sensor_ = s; }
   void set_pack_type_sensor(text_sensor::TextSensor *s) { pack_type_sensor_ = s; }
   void set_pump_timer_sensor(sensor::Sensor *s) { pump_timer_sensor_ = s; }
+  // FORK: set point chosen by the user, from the config message (see DECISIONS.md #6)
+  void set_set_point_sensor(sensor::Sensor *s) { set_point_sensor_ = s; }
+  // FORK: log decoded status only when it changes (see DECISIONS.md #5)
+  void set_log_status_changes(bool on) { log_status_changes_ = on; }
   void set_reset_pin(GPIOPin *pin) { reset_pin_ = pin; }
   void set_notif_date_format(NotifDateFormat format) { notif_date_format_ = format; }
 
@@ -145,10 +157,14 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   // Entity pointers - binary sensors (read-only)
   binary_sensor::BinarySensor *waterfall_sensor_{nullptr};
   binary_sensor::BinarySensor *blower_sensor_{nullptr};
-  select::Select *program_select_{nullptr};
+  binary_sensor::BinarySensor *heater_sensor_{nullptr};
+  binary_sensor::BinarySensor *circulation_sensor_{nullptr};
+  binary_sensor::BinarySensor *pump1_sensor_{nullptr};
+  binary_sensor::BinarySensor *pump2_sensor_{nullptr};
+  GeckoSpaSelect *program_select_{nullptr};
   binary_sensor::BinarySensor *standby_sensor_{nullptr};
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
-  climate::Climate *climate_{nullptr};
+  GeckoSpaClimate *climate_{nullptr};
   text_sensor::TextSensor *rinse_filter_sensor_{nullptr};
   text_sensor::TextSensor *clean_filter_sensor_{nullptr};
   text_sensor::TextSensor *change_water_sensor_{nullptr};
@@ -159,6 +175,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   text_sensor::TextSensor *lock_mode_sensor_{nullptr};
   text_sensor::TextSensor *pack_type_sensor_{nullptr};
   sensor::Sensor *pump_timer_sensor_{nullptr};
+  sensor::Sensor *set_point_sensor_{nullptr};
   GPIOPin *reset_pin_{nullptr};
   NotifDateFormat notif_date_format_{NotifDateFormat::Y_M_D};
 
@@ -182,6 +199,10 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   uint8_t program_id_{0xFF};
   float target_temp_{NAN};
   float actual_temp_{NAN};
+  float set_point_{NAN};
+  bool log_status_changes_{false};
+  uint8_t last_status_[170]{};
+  uint16_t last_status_len_{0};
   uint32_t last_i2c_time_{0};
   uint32_t last_go_send_time_{0};
   uint32_t reset_start_time_{0};
@@ -223,7 +244,9 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   uint8_t hex_to_byte(char high, char low);
   void process_proxy_message(const char *msg);
   void process_i2c_message(const uint8_t *data, uint8_t len);
-  void parse_status_message(const uint8_t *data);
+  void parse_status_message(const uint8_t *data, uint16_t len);
+  bool log_status_diff_(const uint8_t *data, uint16_t len);
+  void log_hex_dump_(const uint8_t *data, int len);
   void parse_notification_message(const uint8_t *data);
   int days_since_2000(int day, int month, int year);
   void update_climate_state();
@@ -233,12 +256,17 @@ class GeckoSpaClimate : public Component, public climate::Climate {
  public:
   GeckoSpaClimate(GeckoSpa *parent) : parent_(parent) {}
 
+  // FORK: false = always report mode heat, action heating/idle (see DECISIONS.md #4)
+  void set_report_cool_mode(bool on) { report_cool_mode_ = on; }
+  bool get_report_cool_mode() const { return report_cool_mode_; }
+
   void setup() override;
   climate::ClimateTraits traits() override;
   void control(const climate::ClimateCall &call) override;
 
  protected:
   GeckoSpa *parent_;
+  bool report_cool_mode_{true};
 };
 
 class GeckoSpaSwitch : public Component, public switch_::Switch {
@@ -259,11 +287,14 @@ class GeckoSpaSelect : public Component, public select::Select {
   void setup() override;
 
   void control(const std::string &value) override;
+  // FORK: store and show a program reported by the spa (see DECISIONS.md #2)
+  void set_reported_program(uint8_t prog);
 
  protected:
   GeckoSpa *parent_{nullptr};
   ESPPreferenceObject pref_;
   uint8_t saved_index_{1};
+  bool saved_valid_{false};  // FORK: a saved value exists in flash
 };
 
 }  // namespace gecko_spa

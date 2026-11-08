@@ -88,7 +88,8 @@ void GeckoSpa::loop() {
     } else if (!reset_in_progress_) {
       // Not connected and not mid-reset: retry with backoff
       // Retry intervals: 30s, 60s, 120s, then every 120s (max 5 retries before giving up)
-      uint32_t backoff = 30000UL * (1 << min(reset_retry_count_, (uint8_t)2));
+      // FORK: no bare min(); it only exists through Arduino.h (DECISIONS.md #9)
+      uint32_t backoff = 30000UL * (1u << (reset_retry_count_ < 2 ? reset_retry_count_ : 2));
       if (reset_retry_count_ < 5 && (millis() - reset_start_time_ > backoff)) {
         ESP_LOGW(TAG, "Arduino recovery retry %d/%d (backoff %ds)",
                  reset_retry_count_ + 1, 5, backoff / 1000);
@@ -315,7 +316,12 @@ uint8_t GeckoSpa::hex_to_byte(char high, char low) {
 }
 
 void GeckoSpa::process_proxy_message(const char *msg) {
-  ESP_LOGD(TAG, "Proxy: %s", msg);
+  // FORK: raw proxy lines move to VERBOSE with log_status_changes (DECISIONS.md #5)
+  if (log_status_changes_) {
+    ESP_LOGV(TAG, "Proxy: %s", msg);
+  } else {
+    ESP_LOGD(TAG, "Proxy: %s", msg);
+  }
 
   // RX:<len>:<hex>
   if (strncmp(msg, "RX:", 3) == 0) {
@@ -372,18 +378,7 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
   // Continuation flag is byte[9]: 0x01 = more coming
   bool is_continuation = (len >= 10 && data[9] == 0x01);
   if (!is_continuation && msg_buffer_len_ == 0 && len > 0) {
-    // Split into 32 bytes per line (64 hex characters)
-    const int CHUNK_BYTES = 32;
-    char hex_str[68];
-    ESP_LOGD(TAG, "FULL-RX:%d bytes", len);
-    for (int offset = 0; offset < len; offset += CHUNK_BYTES) {
-      int chunk_len = (len - offset < CHUNK_BYTES) ? (len - offset) : CHUNK_BYTES;
-      int pos = 0;
-      for (int i = 0; i < chunk_len; i++) {
-        pos += sprintf(hex_str + pos, "%02X", data[offset + i]);
-      }
-      ESP_LOGD(TAG, "  %03d: %s", offset, hex_str);
-    }
+    log_hex_dump_(data, len);
   }
 
   // GO message (15 bytes, ends with "GO") - just log it
@@ -485,10 +480,9 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
     if (prog <= 4 && prog != program_id_) {
       program_id_ = prog;
       ESP_LOGI(TAG, "Program from spa: %d", prog);
-      if (program_select_) {
-        static const char *prog_names[] = {"Away", "Standard", "Energy", "Super Energy", "Weekend"};
-        program_select_->publish_state(prog_names[prog]);
-      }
+      // FORK: also save it, so it survives an ESP restart (DECISIONS.md #2)
+      if (program_select_)
+        program_select_->set_reported_program(prog);
     }
     return;
   }
@@ -499,6 +493,14 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
   // Stripping 16 bytes aligns payload with geckolib struct offsets
   // Only concatenate messages with byte[1]=0x09 (config/status type)
   static const int HEADER_LEN = 16;
+
+  // FORK: frames from the spa-initiated stream (byte 6 = 0x0B) are interleaved
+  // with config/status parts and are not used here. Appending them corrupts the
+  // message being assembled (DECISIONS.md #7).
+  if (protocol::is_spa_initiated_part(data, len)) {
+    ESP_LOGV(TAG, "Spa-initiated frame (%d bytes, type 0x%02X) not used", len, data[13]);
+    return;
+  }
 
   if (len >= HEADER_LEN && data[1] == 0x09) {
     bool more_coming = (data[9] == 0x01);
@@ -520,19 +522,7 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
     }
 
     // Last part received - log complete message in FULL-RX format
-    // Split into 32 bytes per line (64 hex characters)
-    const int CHUNK_BYTES = 32;
-    char hex_str[68];
-    int total_bytes = msg_buffer_len_;
-    ESP_LOGD(TAG, "FULL-RX:%d bytes", total_bytes);
-    for (int offset = 0; offset < total_bytes; offset += CHUNK_BYTES) {
-      int chunk_len = (total_bytes - offset < CHUNK_BYTES) ? (total_bytes - offset) : CHUNK_BYTES;
-      int pos = 0;
-      for (int i = 0; i < chunk_len; i++) {
-        pos += sprintf(hex_str + pos, "%02X", msg_buffer_[offset + i]);
-      }
-      ESP_LOGD(TAG, "  %03d: %s", offset, hex_str);
-    }
+    log_hex_dump_(msg_buffer_, msg_buffer_len_);
 
     // Check message type by size
     // ~162 bytes = status-only message (3 parts: 78+78+54 - 3*16 headers)
@@ -563,7 +553,7 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
                msg_buffer_len_,
                msg_buffer_[3], msg_buffer_[5],
                msg_buffer_[21], msg_buffer_[22], msg_buffer_[23], msg_buffer_[24], msg_buffer_[53]);
-      parse_status_message(msg_buffer_);
+      parse_status_message(msg_buffer_, msg_buffer_len_);
     } else if (msg_buffer_len_ >= 300 && msg_buffer_len_ <= 400) {
       // Config+status message (~390 bytes)
       // Config section has +2 byte offset (geckolib offset N → message byte N+2)
@@ -598,21 +588,31 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
                customer_id, num_zones,
                silent_mode < 5 ? silent_str[silent_mode] : "?");
 
-      // A 390-byte config+status message includes a 162-byte status tail on
-      // this inYT protocol version. Do not require a previous standalone status
-      // message: after a restart, only combined messages may be received.
-      // Keep the fallback specific to the observed frame layout.
-      static const int COMBINED_LEN = 390;
-      static const int EMBEDDED_STATUS_LEN = 162;
-      if (msg_buffer_len_ == COMBINED_LEN) {
-        const int status_offset = COMBINED_LEN - EMBEDDED_STATUS_LEN;
-        const uint8_t *status = &msg_buffer_[status_offset];
+      // FORK: publish the user's set point. Unlike the status set point it does
+      // not drop while an economy program is active (DECISIONS.md #6).
+      if (protocol::set_point_plausible(setpoint_raw) &&
+          (!std::isfinite(set_point_) || fabsf(setpoint_c - set_point_) > 0.01f)) {
+        set_point_ = setpoint_c;
+        ESP_LOGI(TAG, "Set point (config): %.1f", set_point_);
+        if (set_point_sensor_)
+          set_point_sensor_->publish_state(set_point_);
+      }
+
+      // A combined config+status message ends with a full status block. Do
+      // not require a previous standalone status message: after a restart,
+      // only combined messages may be received for a long time.
+      // FORK: known layouts come from a table (390/162 upstream, 353/145 for
+      // inYT v65) instead of the single 390-byte case (DECISIONS.md #1).
+      uint16_t embedded_offset = 0;
+      uint16_t embedded_len = 0;
+      if (protocol::find_embedded_status(msg_buffer_len_, embedded_offset, embedded_len)) {
+        const uint8_t *status = &msg_buffer_[embedded_offset];
         const GeckoLogOffsets &off = *log_offsets_;
         const int target_pos = off.realSetPointG - 254;
         const int actual_pos = off.displayedTempG - 254;
         if (target_pos < 0 || actual_pos < 0 ||
-            target_pos + 1 >= EMBEDDED_STATUS_LEN ||
-            actual_pos + 1 >= EMBEDDED_STATUS_LEN) {
+            target_pos + 1 >= embedded_len ||
+            actual_pos + 1 >= embedded_len) {
           ESP_LOGW(TAG, "Embedded status offsets out of bounds");
           msg_buffer_len_ = 0;
           return;
@@ -623,13 +623,16 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
         const float actual_c = actual_raw / 18.0f;
         // Structural markers and plausible temperatures for this spa model.
         // These checks prevent accidental decoding of unrelated config tails.
+        // An actual temperature of 0 is accepted here (the spa reports 0 just
+        // after power-up); parse_status_message() ignores it.
         if (status[0] == 0x01 && status[1] == 0x00 &&
             target_c >= 8.0f && target_c <= 40.0f &&
             actual_c >= 0.0f && actual_c <= 45.0f) {
-          if (status_msg_len_ == 0)
-            ESP_LOGI(TAG, "Embedded status found before standalone status (162 bytes)");
+          if (status_msg_len_ == 0) {
+            ESP_LOGI(TAG, "Embedded status found before standalone status (%d bytes)", embedded_len);
+          }
           ESP_LOGI(TAG, "Status from config fallback: target=%.1f actual=%.1f", target_c, actual_c);
-          parse_status_message(status);
+          parse_status_message(status, embedded_len);
         } else {
           ESP_LOGW(TAG, "Embedded status rejected: marker=%02X/%02X target=%.1f actual=%.1f",
                    status[0], status[1], target_c, actual_c);
@@ -639,7 +642,7 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
         const int status_offset = msg_buffer_len_ - status_msg_len_;
         if (status_offset > 0 && msg_buffer_[status_offset - 1] == 0x3B &&
             msg_buffer_[status_offset + 1] == 0x00) {
-          parse_status_message(&msg_buffer_[status_offset]);
+          parse_status_message(&msg_buffer_[status_offset], status_msg_len_);
         }
       }
 
@@ -661,7 +664,60 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
   }
 }
 
-void GeckoSpa::parse_status_message(const uint8_t *data) {
+// FORK: hex dump of a received message. Moves to VERBOSE when
+// log_status_changes is set (DECISIONS.md #5).
+void GeckoSpa::log_hex_dump_(const uint8_t *data, int len) {
+  // Split into 32 bytes per line (64 hex characters)
+  const int CHUNK_BYTES = 32;
+  char hex_str[68];
+  if (log_status_changes_) {
+    ESP_LOGV(TAG, "FULL-RX:%d bytes", len);
+  } else {
+    ESP_LOGD(TAG, "FULL-RX:%d bytes", len);
+  }
+  for (int offset = 0; offset < len; offset += CHUNK_BYTES) {
+    int chunk_len = (len - offset < CHUNK_BYTES) ? (len - offset) : CHUNK_BYTES;
+    int pos = 0;
+    for (int i = 0; i < chunk_len; i++) {
+      pos += sprintf(hex_str + pos, "%02X", data[offset + i]);
+    }
+    if (log_status_changes_) {
+      ESP_LOGV(TAG, "  %03d: %s", offset, hex_str);
+    } else {
+      ESP_LOGD(TAG, "  %03d: %s", offset, hex_str);
+    }
+  }
+}
+
+// FORK: logs the bytes that changed since the previous status block and
+// remembers this one. Returns true if anything changed (DECISIONS.md #5).
+bool GeckoSpa::log_status_diff_(const uint8_t *data, uint16_t len) {
+  if (len > sizeof(last_status_))
+    len = sizeof(last_status_);
+  if (last_status_len_ != len) {
+    memcpy(last_status_, data, len);
+    last_status_len_ = len;
+    ESP_LOGI(TAG, "Status block (%d bytes) received", len);
+    return true;
+  }
+  char buf[160];
+  int pos = 0;
+  int changes = 0;
+  for (uint16_t i = 0; i < len; i++) {
+    if (data[i] == last_status_[i])
+      continue;
+    changes++;
+    if (pos < static_cast<int>(sizeof(buf)) - 16)
+      pos += snprintf(buf + pos, sizeof(buf) - pos, " [%u]%02X>%02X", i, last_status_[i], data[i]);
+  }
+  memcpy(last_status_, data, len);
+  if (changes == 0)
+    return false;
+  ESP_LOGI(TAG, "Status change (%d bytes):%s%s", changes, buf, pos >= static_cast<int>(sizeof(buf)) - 16 ? " ..." : "");
+  return true;
+}
+
+void GeckoSpa::parse_status_message(const uint8_t *data, uint16_t len) {
   // Convert geckolib offset to message byte: byte = geckolib_offset - 254
   // This accounts for the +2 byte misalignment between geckolib structs and actual message
   auto toB = [](uint16_t geckoOffset) -> uint16_t { return geckoOffset - 254; };
@@ -735,28 +791,32 @@ void GeckoSpa::parse_status_message(const uint8_t *data) {
   float actual_temp = actual_raw / 18.0f;
 
   // === Log decoded status (geckolib format) ===
-  ESP_LOGI(TAG, "Status[v%d]: Hours=%d QuietState=%s LockMode=%s PackType=%s",
-           status_version_, hours,
-           quietState < 4 ? quiet_str[quietState] : "?",
-           lockMode < 3 ? lock_str[lockMode] : "?",
-           packType < 11 ? pack_str[packType] : "?");
+  // FORK: with log_status_changes, only when the status block changed.
+  const bool log_decoded = !log_status_changes_ || log_status_diff_(data, len);
+  if (log_decoded) {
+    ESP_LOGI(TAG, "Status[v%d]: Hours=%d QuietState=%s LockMode=%s PackType=%s",
+             status_version_, hours,
+             quietState < 4 ? quiet_str[quietState] : "?",
+             lockMode < 3 ? lock_str[lockMode] : "?",
+             packType < 11 ? pack_str[packType] : "?");
 
-  ESP_LOGI(TAG, "Status: Temp=%.1f/%.1f°C Heater=%s CP=%s BL=%s Waterfall=%s",
-           target_temp, actual_temp,
-           heater_on ? "ON" : "OFF",
-           cp_on ? "ON" : "OFF",
-           bl_on ? "ON" : "OFF",
-           waterfall ? "ON" : "OFF");
+    ESP_LOGI(TAG, "Status: Temp=%.1f/%.1f°C Heater=%s CP=%s BL=%s Waterfall=%s",
+             target_temp, actual_temp,
+             heater_on ? "ON" : "OFF",
+             cp_on ? "ON" : "OFF",
+             bl_on ? "ON" : "OFF",
+             waterfall ? "ON" : "OFF");
 
-  ESP_LOGI(TAG, "Status: P1=%s P2=%s P3=%s P4=%s PumpTimer=%dmin",
-           pump_state_str[p1_state], pump_state_str[p2_state],
-           pump_state_str[p3_state], pump_state_str[p4_state],
-           pumpTime);
+    ESP_LOGI(TAG, "Status: P1=%s P2=%s P3=%s P4=%s PumpTimer=%dmin",
+             pump_state_str[p1_state], pump_state_str[p2_state],
+             pump_state_str[p3_state], pump_state_str[p4_state],
+             pumpTime);
 
-  ESP_LOGI(TAG, "Status: UdP1=%s UdP2=%s UdP3=%s UdP4=%s UdLi=%s",
-           pump_ud_str[udP1], pump_ud_str[udP2],
-           pump_ud_str[udP3], pump_ud_str[udP4],
-           udLi ? "ON" : "OFF");
+    ESP_LOGI(TAG, "Status: UdP1=%s UdP2=%s UdP3=%s UdP4=%s UdLi=%s",
+             pump_ud_str[udP1], pump_ud_str[udP2],
+             pump_ud_str[udP3], pump_ud_str[udP4],
+             udLi ? "ON" : "OFF");
+  }
 
   // === Update internal state and entities ===
 
@@ -779,7 +839,7 @@ void GeckoSpa::parse_status_message(const uint8_t *data) {
   // Plausible ranges, same as for the embedded status in config messages
   bool target_valid = (target_raw != 0 && target_temp >= 8.0f && target_temp <= 40.0f);
   bool actual_valid = (actual_raw != 0 && actual_temp >= 0.0f && actual_temp <= 45.0f);
-  if (!target_valid || !actual_valid) {
+  if ((!target_valid || !actual_valid) && log_decoded) {
     ESP_LOGW(TAG, "Implausible temperature ignored: target=%.1f (raw=%u) actual=%.1f (raw=%u)",
              target_temp, target_raw, actual_temp, actual_raw);
   }
@@ -804,6 +864,9 @@ void GeckoSpa::parse_status_message(const uint8_t *data) {
     ESP_LOGI(TAG, "Circulation: %s", circ_state_ ? "ON" : "OFF");
     if (circ_switch_)
       circ_switch_->publish_state(circ_state_);
+    // FORK: read-only circulation sensor (DECISIONS.md #3)
+    if (circulation_sensor_)
+      circulation_sensor_->publish_state(circ_state_);
   }
 
   if (first || new_waterfall != waterfall_state_) {
@@ -824,6 +887,9 @@ void GeckoSpa::parse_status_message(const uint8_t *data) {
     heating_state_ = new_heating;
     ESP_LOGI(TAG, "Heating: %s", heating_state_ ? "ON" : "OFF");
     update_climate_state();
+    // FORK: read-only heater sensor (DECISIONS.md #3)
+    if (heater_sensor_)
+      heater_sensor_->publish_state(heating_state_);
   }
 
   if (first || new_standby != standby_state_) {
@@ -882,11 +948,16 @@ void GeckoSpa::parse_status_message(const uint8_t *data) {
     pump1_state_ = new_p1;
     if (pump1_switch_)
       pump1_switch_->publish_state(pump1_state_ != 0);
+    // FORK: read-only pump sensors, on for any speed (DECISIONS.md #3)
+    if (pump1_sensor_)
+      pump1_sensor_->publish_state(pump1_state_ != 0);
   }
   if (first || new_p2 != pump2_state_) {
     pump2_state_ = new_p2;
     if (pump2_switch_)
       pump2_switch_->publish_state(pump2_state_ != 0);
+    if (pump2_sensor_)
+      pump2_sensor_->publish_state(pump2_state_ != 0);
   }
   if (first || new_p3 != pump3_state_) {
     pump3_state_ = new_p3;
@@ -914,8 +985,13 @@ void GeckoSpa::update_climate_state() {
   climate_->target_temperature = target_temp_;
   climate_->current_temperature = actual_temp_;
 
+  // FORK: with report_cool_mode: false the spa is always shown in heat mode
+  // and the action follows the heater only. The spa has no cooling, so water
+  // above the set point is idle, not cooling (DECISIONS.md #4).
+  const bool cool = climate_->get_report_cool_mode() && target_temp_ < actual_temp_;
+
   // Betriebsmodus anhand der Temperaturen bestimmen.
-  if (target_temp_ < actual_temp_) {
+  if (cool) {
     climate_->mode = climate::CLIMATE_MODE_COOL;
   } else {
     climate_->mode = climate::CLIMATE_MODE_HEAT;
@@ -924,7 +1000,7 @@ void GeckoSpa::update_climate_state() {
   // Aktuelle Heiz-/Kühlaktion bestimmen.
   if (heating_state_) {
     climate_->action = climate::CLIMATE_ACTION_HEATING;
-  } else if (target_temp_ < actual_temp_) {
+  } else if (cool) {
     climate_->action = climate::CLIMATE_ACTION_COOLING;
   } else {
     climate_->action = climate::CLIMATE_ACTION_IDLE;
@@ -1050,7 +1126,11 @@ void GeckoSpaClimate::setup() {
 
 climate::ClimateTraits GeckoSpaClimate::traits() {
   auto traits = climate::ClimateTraits();
-  traits.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_COOL});
+  if (report_cool_mode_) {
+    traits.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_COOL});
+  } else {
+    traits.set_supported_modes({climate::CLIMATE_MODE_HEAT});  // FORK: DECISIONS.md #4
+  }
   
   traits.add_feature_flags(
       climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
@@ -1102,6 +1182,7 @@ void GeckoSpaSelect::setup() {
 
   // Restore saved state on boot
   if (this->pref_.load(&this->saved_index_) && this->saved_index_ < 5) {
+    this->saved_valid_ = true;  // FORK: DECISIONS.md #2
     static const char *prog_names[] = {"Away", "Standard", "Energy", "Super Energy", "Weekend"};
     this->publish_state(prog_names[this->saved_index_]);
     ESP_LOGI("gecko_spa", "Restored program state: %s (index %d)", prog_names[this->saved_index_], this->saved_index_);
@@ -1123,10 +1204,25 @@ void GeckoSpaSelect::control(const std::string &value) {
 
   // Save the state
   this->saved_index_ = prog;
-  this->pref_.save(&this->saved_index_);
+  this->saved_valid_ = this->pref_.save(&this->saved_index_);
 
   parent_->send_program_command(prog);
   this->publish_state(value);
+}
+
+// FORK: the spa reports its program only at power-up and when it changes, so
+// save it; setup() then restores it after an ESP restart (DECISIONS.md #2).
+// Saving only on change keeps flash writes rare.
+void GeckoSpaSelect::set_reported_program(uint8_t prog) {
+  const char *name = protocol::program_name(prog);
+  if (name == nullptr)
+    return;
+  if (!this->saved_valid_ || prog != this->saved_index_) {
+    this->saved_index_ = prog;
+    this->saved_valid_ = this->pref_.save(&this->saved_index_);
+    ESP_LOGI("gecko_spa", "Saved program reported by spa: %s", name);
+  }
+  this->publish_state(name);
 }
 
 }  // namespace gecko_spa

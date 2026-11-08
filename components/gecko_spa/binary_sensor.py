@@ -14,6 +14,11 @@ SENSOR_TYPES = {
     "connected": "CONNECTED",
     "waterfall": "WATERFALL",
     "blower": "BLOWER",
+    # FORK: read-only output states (docs/fork/DECISIONS.md #3)
+    "heater": "HEATER",
+    "circulation": "CIRCULATION",
+    "pump1": "PUMP1",
+    "pump2": "PUMP2",
 }
 
 CONFIG_SCHEMA = binary_sensor.binary_sensor_schema().extend(
@@ -37,3 +42,11 @@ async def to_code(config):
         cg.add(parent.set_waterfall_sensor(var))
     elif sensor_type == "blower":
         cg.add(parent.set_blower_sensor(var))
+    elif sensor_type == "heater":
+        cg.add(parent.set_heater_sensor(var))
+    elif sensor_type == "circulation":
+        cg.add(parent.set_circulation_sensor(var))
+    elif sensor_type == "pump1":
+        cg.add(parent.set_pump1_sensor(var))
+    elif sensor_type == "pump2":
+        cg.add(parent.set_pump2_sensor(var))

@@ -10,6 +10,8 @@ AUTO_LOAD = ["climate", "switch", "select", "binary_sensor", "text_sensor"]
 CONF_UART_ID = "uart_id"
 CONF_RESET_PIN = "reset_pin"
 CONF_NOTIF_DATE_FORMAT = "notif_date_format"
+# FORK: log decoded status only when it changes (docs/fork/DECISIONS.md #5)
+CONF_LOG_STATUS_CHANGES = "log_status_changes"
 
 gecko_spa_ns = cg.esphome_ns.namespace("gecko_spa")
 GeckoSpa = gecko_spa_ns.class_("GeckoSpa", cg.Component, uart.UARTDevice)
@@ -26,6 +28,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(CONF_UART_ID): cv.use_id(uart.UARTComponent),
         cv.Optional(CONF_RESET_PIN): pins.gpio_output_pin_schema,
         cv.Optional(CONF_NOTIF_DATE_FORMAT, default="Y-M-D"): cv.enum(NOTIF_DATE_FORMATS, upper=True),
+        cv.Optional(CONF_LOG_STATUS_CHANGES, default=False): cv.boolean,
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -43,3 +46,5 @@ async def to_code(config):
 
     if CONF_NOTIF_DATE_FORMAT in config:
         cg.add(var.set_notif_date_format(config[CONF_NOTIF_DATE_FORMAT]))
+
+    cg.add(var.set_log_status_changes(config[CONF_LOG_STATUS_CHANGES]))
