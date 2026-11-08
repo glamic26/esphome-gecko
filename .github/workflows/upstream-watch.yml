@@ -1,0 +1,53 @@
+name: Upstream watch
+
+# Weekly: mirror the upstream master branch into this fork's master and open a
+# pull request to merge it into spa-fixes. Never tags, releases or deploys.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_URL: https://github.com/LDWTH/esphome-gecko
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Mirror upstream master
+        id: mirror
+        run: |
+          git fetch --no-tags "$UPSTREAM_URL" master
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream unchanged."
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "::error::Fork master has diverged from upstream; not overwriting it."
+            exit 1
+          fi
+          git push origin FETCH_HEAD:refs/heads/master
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Open merge pull request
+        if: steps.mirror.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh pr list --base spa-fixes --head master --state open --json number --jq 'length')
+          if [ "$existing" != "0" ]; then
+            echo "A merge pull request is already open."
+            exit 0
+          fi
+          gh pr create --base spa-fixes --head master \
+            --title "Merge upstream changes" \
+            --body "Upstream master has new commits. Merge (do not rebase) after CI passes and the changes have been reviewed. Pull requests opened by this workflow do not start CI on their own: run the CI workflow on this branch from the Actions tab."

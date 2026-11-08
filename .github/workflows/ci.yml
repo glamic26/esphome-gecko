@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [spa-fixes]
+    tags: ["fork-v*"]
+  pull_request:
+    branches: [spa-fixes]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ESPHOME_VERSION: "2026.10.2"
+  UPSTREAM_URL: https://github.com/LDWTH/esphome-gecko
+
+jobs:
+  privacy:
+    name: Privacy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check files and the fork's commits
+        run: |
+          git fetch --no-tags "$UPSTREAM_URL" master
+          python3 tools/privacy_check.py --commits FETCH_HEAD..HEAD
+
+  replay-tests:
+    name: Replay tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/run.sh
+
+  esphome:
+    name: ESPHome config and host end-to-end test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "esphome==${ESPHOME_VERSION}"
+      - name: Validate example configs
+        run: |
+          cp .github/ci/secrets.yaml esphome/secrets.yaml
+          for f in esphome/spa-controller-s3-zero.yaml esphome/spa-controller.yaml esphome/spa-controller-olimex.yaml; do
+            echo "::group::$f"
+            esphome config "$f" > /dev/null
+            echo "::endgroup::"
+          done
+      - name: Host build and end-to-end test
+        run: python3 tests/e2e/run_host_e2e.py
+
+  firmware:
+    name: Firmware build (${{ matrix.config }}, ESPHome ${{ matrix.esphome }})
+    runs-on: ubuntu-latest
+    needs: [replay-tests, esphome]
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [spa-controller-s3-zero.yaml, spa-controller.yaml, spa-controller-olimex.yaml]
+        esphome: ["2026.10.2", "latest"]
+    # A new ESPHome release can break the build; that should be reported,
+    # not block the pinned version.
+    continue-on-error: ${{ matrix.esphome == 'latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ matrix.config }}-${{ matrix.esphome }}
+      - name: Install ESPHome
+        run: |
+          if [ "${{ matrix.esphome }}" = latest ]; then pip install esphome; else pip install "esphome==${{ matrix.esphome }}"; fi
+          esphome version
+      - name: Compile
+        run: |
+          cp .github/ci/secrets.yaml esphome/secrets.yaml
+          esphome compile "esphome/${{ matrix.config }}"
