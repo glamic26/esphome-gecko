@@ -10,6 +10,9 @@
 >
 > Status: `fork-v1.0.0`. Tested by replaying traffic recorded on real hardware
 > and by the on-spa acceptance checklist in [docs/fork/TESTING.md](docs/fork/TESTING.md).
+>
+> The [Buy me a coffee](#buy-me-a-coffee) link further down supports
+> [zteifel](https://github.com/zteifel), the original author of this component.
 
 <p align="center"><img src="https://github.com/zteifel/esphome-gecko/blob/master/logo_small.png" alt="Smart Spa Heating" width="400"><img src="https://github.com/zteifel/smart-spa-heating/blob/main/logo_small.png" alt="Smart Spa Heating" width="400"></p>
 
