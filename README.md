@@ -8,8 +8,8 @@
 > Changes in this fork were developed with AI assistance (Claude Code) and
 > tested on real hardware. Review accordingly.
 >
-> Status: pre-release. Tested by replaying traffic recorded on real hardware;
-> on-spa acceptance of this build is pending.
+> Status: `fork-v1.0.0`. Tested by replaying traffic recorded on real hardware
+> and by the on-spa acceptance checklist in [docs/fork/TESTING.md](docs/fork/TESTING.md).
 
 <p align="center"><img src="https://github.com/zteifel/esphome-gecko/blob/master/logo_small.png" alt="Smart Spa Heating" width="400"><img src="https://github.com/zteifel/smart-spa-heating/blob/main/logo_small.png" alt="Smart Spa Heating" width="400"></p>
 

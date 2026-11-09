@@ -3,10 +3,13 @@
 Changes in this fork relative to [LDWTH/esphome-gecko](https://github.com/LDWTH/esphome-gecko).
 Numbers refer to [docs/fork/DECISIONS.md](docs/fork/DECISIONS.md).
 
-## Unreleased (planned fork-v1.0.0)
+## fork-v1.0.0
 
-Based on upstream commit `614d2c0`. Tagged after the on-spa acceptance
-checklist in [docs/fork/TESTING.md](docs/fork/TESTING.md) has passed.
+Based on upstream commit `614d2c0`. The on-spa acceptance checklist in
+[docs/fork/TESTING.md](docs/fork/TESTING.md) passed on an inYT pack
+(config/status version 65) with an ESP32-S3-Zero, including 24 hours without
+unexpected warnings and the heater sensor matching the pack's power draw
+through three heat cycles.
 
 ### Fixed
 

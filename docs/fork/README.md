@@ -10,8 +10,8 @@ an option whose default is upstream's behaviour.
 Changes in this fork were developed with AI assistance (Claude Code) and
 tested on real hardware. Review accordingly.
 
-Status: pre-release. Tested by replaying traffic recorded on real hardware;
-on-spa acceptance of this build is pending.
+Status: `fork-v1.0.0`. Tested by replaying traffic recorded on real hardware
+and by the on-spa acceptance checklist in [TESTING.md](TESTING.md).
 
 ## Changes
 
